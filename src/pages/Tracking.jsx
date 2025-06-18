@@ -89,7 +89,6 @@ import {
   FiShield,
   FiUsers,
   FiAirplay,
-  FiDownload,
   
 } from "react-icons/fi";
 
@@ -157,6 +156,41 @@ const Tracking = () => {
   // Add ref for timeline container
   const timelineContainerRef = useRef(null);
   const firstTimelineEventRef = useRef(null);
+
+  // Handle URL parameters for shared tracking links
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const trackingParam = urlParams.get('tracking');
+    
+    if (trackingParam) {
+      // Set the tracking number and trigger tracking
+      setTrackingNumber(trackingParam);
+      
+      // Add to tracking numbers if not already present
+      if (!trackingNumbers.includes(trackingParam)) {
+        setTrackingNumbers(prev => [...prev, trackingParam]);
+      }
+      
+      // Navigate to tracking section
+      setSelectedTracking(trackingParam);
+      setShowTrackingSection(true);
+      setActiveSection("tracking");
+      
+      // Track the number automatically
+      handleTrack(trackingParam);
+      
+      // Scroll to tracking section after a short delay
+      setTimeout(() => {
+        const trackingSection = document.getElementById("tracking-section");
+        if (trackingSection) {
+          trackingSection.scrollIntoView({ behavior: "smooth" });
+        }
+      }, 500);
+      
+      // Clean up URL to remove the parameter
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
 
   
   const { isOpen: isBulkModalOpen, onOpen: onBulkModalOpen, onClose: onBulkModalClose } = useDisclosure();
@@ -1361,20 +1395,55 @@ const Tracking = () => {
   const calculateDeliveryDays = (events) => {
     if (!events || events.length < 2) return { days: 0, isComplete: false, businessDays: 0 };
     
-    const firstEventDate = new Date(events[0].Timestamp);
-    const lastEventDate = new Date(events[events.length - 1].Timestamp);
-    const isDelivered = events[events.length - 1].Message.toLowerCase().includes("delivered");
+    // Find the appropriate start event based on priority:
+    // 1st priority: "Item Picked up"
+    // 2nd priority: "Received at LEX India Hub"
+    // Fallback: First event (Shipment Created)
     
-    const diffTime = Math.abs(lastEventDate - firstEventDate);
+    let startEvent = null;
+    let startEventType = 'created';
+    
+    // Search through events to find the pickup or hub received event
+    // Note: events are sorted chronologically (oldest first after transformation)
+    for (let i = 0; i < events.length; i++) {
+      const eventMessage = events[i].Message.toLowerCase();
+      
+      // First priority: Item Picked up
+      if (eventMessage.includes('item picked up')) {
+        startEvent = events[i];
+        startEventType = 'item picked up';
+        break;
+      }
+      
+      // Second priority: Received at LEX India Hub
+      if (eventMessage.includes('received at lex india hub')) {
+        startEvent = events[i];
+        startEventType = 'received at lex india hub';
+        // Don't break here - continue looking for "Item Picked up"
+      }
+    }
+    
+    // If no pickup or hub event found, use the oldest event (shipment created)
+    if (!startEvent) {
+      startEvent = events[0];
+      startEventType = 'created';
+    }
+    
+    const startEventDate = new Date(startEvent.Timestamp);
+    const deliveredEvent = events[events.length - 1]; // Most recent event (should be delivered)
+    const deliveredEventDate = new Date(deliveredEvent.Timestamp);
+    const isDelivered = deliveredEvent.Message.toLowerCase().includes("delivered");
+    
+    const diffTime = Math.abs(deliveredEventDate - startEventDate);
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     
     // Calculate business days (excluding weekends)
     let businessDays = 0;
-    const currentDate = new Date(firstEventDate);
+    const currentDate = new Date(startEventDate);
     
     // Set time to midnight to avoid time comparison issues
     currentDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(lastEventDate);
+    const endDate = new Date(deliveredEventDate);
     endDate.setHours(0, 0, 0, 0);
     
     // Loop through each day and count only if it's not weekend
@@ -1392,268 +1461,14 @@ const Tracking = () => {
       days: diffDays, 
       businessDays: businessDays,
       isComplete: isDelivered,
-      startDate: firstEventDate,
-      endDate: lastEventDate
+      startDate: startEventDate,
+      endDate: deliveredEventDate,
+      startEventType: startEventType,
+      startEventMessage: startEvent.Message
     };
   };
 
-  // PDF Generation Function for Tracking History
-  const generateTrackingHistoryPDF = (trackingNumber) => {
-    const data = trackingDataMap[trackingNumber];
-    if (!data || !data.result || data.result.length === 0) {
-      showToast({
-        title: "No Data",
-        description: "No tracking history available to export",
-        status: "warning",
-        duration: 3000,
-        isClosable: true,
-      });
-      return;
-    }
 
-    // Create PDF content as HTML
-    const pdfContent = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <title>Tracking History - ${trackingNumber}</title>
-        <style>
-          body {
-            font-family: 'Arial', sans-serif;
-            margin: 0;
-            padding: 10px;
-            background-color: #f8f9fa;
-            color: #333;
-            font-size: 12px;
-          }
-          .container {
-            max-width: 100%;
-            margin: 0 auto;
-            background: white;
-            padding: 15px;
-            border-radius: 6px;
-            box-shadow: 0 1px 5px rgba(0,0,0,0.1);
-          }
-          .header {
-            text-align: center;
-            margin-bottom: 15px;
-            border-bottom: 2px solid #3182ce;
-            padding-bottom: 10px;
-          }
-          .logo {
-            font-size: 18px;
-            font-weight: bold;
-            color: #3182ce;
-            margin-bottom: 5px;
-          }
-          .tracking-number {
-            font-size: 14px;
-            font-weight: bold;
-            color: #2d3748;
-            margin-bottom: 5px;
-          }
-          .date-generated {
-            font-size: 10px;
-            color: #718096;
-          }
-          .shipment-info {
-            background: #f7fafc;
-            padding: 12px;
-            border-radius: 4px;
-            margin-bottom: 15px;
-            border-left: 3px solid #3182ce;
-          }
-          .shipment-info h3 {
-            margin: 0 0 8px 0;
-            font-size: 14px;
-            color: #2d3748;
-          }
-          .info-row {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 4px;
-            font-size: 11px;
-          }
-          .info-label {
-            font-weight: bold;
-            color: #4a5568;
-          }
-          .info-value {
-            color: #2d3748;
-            text-align: right;
-            max-width: 60%;
-          }
-          .timeline {
-            margin-top: 10px;
-          }
-          .timeline-header {
-            font-size: 14px;
-            font-weight: bold;
-            color: #2d3748;
-            margin-bottom: 10px;
-            border-bottom: 1px solid #e2e8f0;
-            padding-bottom: 5px;
-          }
-          .timeline-item {
-            display: flex;
-            margin-bottom: 8px;
-            padding: 8px;
-            background: #f7fafc;
-            border-radius: 4px;
-            border-left: 2px solid #3182ce;
-            font-size: 10px;
-          }
-          .timeline-date {
-            min-width: 80px;
-            font-weight: bold;
-            color: #4a5568;
-            margin-right: 10px;
-            font-size: 9px;
-          }
-          .timeline-content {
-            flex: 1;
-          }
-          .timeline-message {
-            font-weight: bold;
-            color: #2d3748;
-            margin-bottom: 2px;
-            font-size: 10px;
-            line-height: 1.2;
-          }
-          .timeline-time {
-            font-size: 8px;
-            color: #718096;
-          }
-          .status-delivered {
-            border-left-color: #38a169 !important;
-          }
-          .status-transit {
-            border-left-color: #3182ce !important;
-          }
-          .status-processing {
-            border-left-color: #805ad5 !important;
-          }
-          .footer {
-            margin-top: 15px;
-            text-align: center;
-            padding-top: 10px;
-            border-top: 1px solid #e2e8f0;
-            font-size: 8px;
-            color: #718096;
-          }
-          .footer p {
-            margin: 2px 0;
-          }
-          
-          /* Print-specific styles */
-          @media print {
-            body {
-              background: white !important;
-              padding: 5px !important;
-            }
-            .container {
-              box-shadow: none !important;
-              padding: 10px !important;
-            }
-            .timeline-item {
-              break-inside: avoid;
-              page-break-inside: avoid;
-            }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <div class="logo">Lexship Tracking Report</div>
-            <div class="tracking-number">Tracking Number: ${trackingNumber}</div>
-            <div class="date-generated">Generated on ${new Date().toLocaleDateString('en-US', { 
-              year: 'numeric', 
-              month: 'short', 
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit'
-            })}</div>
-          </div>
-
-          <div class="shipment-info">
-            <h3>Shipment Information</h3>
-            <div class="info-row">
-              <span class="info-label">Current Status:</span>
-              <span class="info-value">${data.result[data.result.length - 1].Message}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Last Updated:</span>
-              <span class="info-value">${formatDate(data.result[data.result.length - 1].Timestamp).date} ${formatDate(data.result[data.result.length - 1].Timestamp).time}</span>
-            </div>
-            ${data.originInfo && data.destinationInfo ? `
-            <div class="info-row">
-              <span class="info-label">Route:</span>
-              <span class="info-value">${formatCityName(data.originInfo.city)}, ${data.originInfo.country} → ${formatCityName(data.destinationInfo.city)}, ${data.destinationInfo.country}</span>
-            </div>
-            ` : ''}
-            <div class="info-row">
-              <span class="info-label">Total Events:</span>
-              <span class="info-value">${data.result.length}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Delivery Time:</span>
-              <span class="info-value">${calculateDeliveryDays(data.result).businessDays} business days</span>
-            </div>
-          </div>
-
-          <div class="timeline">
-            <div class="timeline-header">Tracking History (${data.result.length} Events)</div>
-            ${data.result.slice().reverse().map((event, index) => {
-              const { date, time } = formatDate(event.Timestamp);
-              const statusColor = getStatusColor(event.Message);
-              const statusClass = statusColor === 'green' ? 'status-delivered' : 
-                                 statusColor === 'blue' ? 'status-transit' : 'status-processing';
-              return `
-                <div class="timeline-item ${statusClass}">
-                  <div class="timeline-date">${date}</div>
-                  <div class="timeline-content">
-                    <div class="timeline-message">${event.Message}</div>
-                    <div class="timeline-time">${time}</div>
-                  </div>
-                </div>
-              `;
-            }).join('')}
-          </div>
-
-          <div class="footer">
-            <p>This tracking report was generated by Lexship Tracking System</p>
-            <p>For support, contact: customerservice@lexship.com | +91 8448444097</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-
-    // Create a new window and print
-    const printWindow = window.open('', '_blank');
-    printWindow.document.write(pdfContent);
-    printWindow.document.close();
-    
-    // Wait for content to load then trigger print
-    printWindow.onload = function() {
-      printWindow.print();
-      
-      // Close the window after printing (optional)
-      printWindow.onafterprint = function() {
-        printWindow.close();
-      };
-    };
-
-    showToast({
-      title: "PDF Generated",
-      description: "Tracking history PDF is ready for download",
-      status: "success",
-      duration: 3000,
-      isClosable: true,
-    });
-  };
 
   useEffect(() => {
     if (selectedTracking) {
@@ -2226,70 +2041,59 @@ const Tracking = () => {
                           color="white"
                         />
                       </motion.div>
-                      <Tooltip hasArrow label="Share Screenshot" placement="top">
+                      <Tooltip hasArrow label="Share Tracking Link" placement="top">
                         <IconButton
                           icon={<FiShare2 />}
                           size="sm"
-                          aria-label="Share Screenshot"
+                          aria-label="Share Tracking Link"
                           variant="ghost"
                           color="white"
                           _hover={{ bg: "whiteAlpha.300" }}
                           onClick={() => {
-                            const trackingInfo = document.getElementById('quick-track-info');
-                            const recentUpdates = document.getElementById('quick-track-updates');
-                            if (trackingInfo && recentUpdates) {
-                              // Create a container div to hold both elements for the screenshot
-                              const container = document.createElement('div');
-                              container.style.position = 'absolute';
-                              container.style.left = '-9999px';
-                              container.style.background = 'white';
-                              container.style.padding = '12px';
-                              container.style.borderRadius = '8px';
-                              container.style.width = '400px';
-                              
-                              // Clone the elements to avoid modifying the original DOM
-                              const statusClone = trackingInfo.cloneNode(true);
-                              statusClone.style.padding = '10px';
-                              statusClone.style.marginBottom = '8px';
-                                              
-                                              // Create a filtered clone of the updates section without the button
-                                              const updatesClone = recentUpdates.cloneNode(true);
-                                              updatesClone.style.padding = '10px';
-                                              const buttonElement = updatesClone.querySelector('button');
-                                              if (buttonElement && buttonElement.parentNode) {
-                                                buttonElement.parentNode.removeChild(buttonElement);
-                                              }
-                                              
-                                              // Make update items more compact
-                                              const updateItems = updatesClone.querySelectorAll('[p="3"]');
-                                              updateItems.forEach(item => {
-                                                item.style.padding = '8px';
-                                                item.style.marginBottom = '4px';
-                                              });
-                                              
-                                              // Append clones to container
-                                              container.appendChild(statusClone);
-                                              container.appendChild(updatesClone);
-                                              document.body.appendChild(container);
-                              
-                              // Take screenshot of the combined container
-                              html2canvas(container).then(canvas => {
-                                document.body.removeChild(container);
-                                canvas.toBlob(blob => {
-                                  const url = URL.createObjectURL(blob);
-                                  const a = document.createElement('a');
-                                  a.href = url;
-                                  a.download = `tracking-${quickTrackData.number}.png`;
-                                  a.click();
-                                  URL.revokeObjectURL(url);
-                                  
-                                  showToast({
-                                    title: "Screenshot Saved",
-                                    description: "Tracking screenshot has been saved",
-                                    status: "success",
-                                    duration: 3000,
-                                    isClosable: true,
-                                  });
+                            // Create a tracking URL that will navigate to the tracking section
+                            const trackingUrl = `${window.location.origin}${window.location.pathname}?tracking=${quickTrackData.number}`;
+                            
+                            // Check if Web Share API is supported
+                            if (navigator.share) {
+                              navigator.share({
+                                title: `LEX Tracking - ${quickTrackData.number}`,
+                                text: `Track your shipment with LEX`,
+                                url: trackingUrl,
+                              }).then(() => {
+                                showToast({
+                                  title: "Link Shared",
+                                  description: "Tracking link has been shared successfully",
+                                  status: "success",
+                                  duration: 3000,
+                                  isClosable: true,
+                                });
+                              }).catch((error) => {
+                                console.log('Error sharing:', error);
+                                // Fallback to copying to clipboard
+                                copyTrackingUrl(trackingUrl);
+                              });
+                            } else {
+                              // Fallback to copying to clipboard
+                              copyTrackingUrl(trackingUrl);
+                            }
+
+                            function copyTrackingUrl(url) {
+                              navigator.clipboard.writeText(url).then(() => {
+                                showToast({
+                                  title: "Link Copied",
+                                  description: "Tracking link has been copied to clipboard",
+                                  status: "success",
+                                  duration: 3000,
+                                  isClosable: true,
+                                });
+                              }).catch((err) => {
+                                console.error('Failed to copy: ', err);
+                                showToast({
+                                  title: "Copy Failed",
+                                  description: "Unable to copy tracking link",
+                                  status: "error",
+                                  duration: 3000,
+                                  isClosable: true,
                                 });
                               });
                             }
@@ -4016,32 +3820,9 @@ const Tracking = () => {
                                       </Text>
                                       
                                       {trackingDataMap[selectedTracking].result && trackingDataMap[selectedTracking].result.length > 0 && (
-                                        <HStack spacing={2}>
-                                          <Badge colorScheme="blue" fontSize={{ base: "2xs", md: "sm" }}>
-                                            {trackingDataMap[selectedTracking].result.length} events
-                                          </Badge>
-                                          <Tooltip label="Download tracking history as PDF" placement="top" hasArrow>
-                                            <IconButton
-                                              icon={<FiDownload />}
-                                              size={{ base: "xs", md: "sm" }}
-                                              colorScheme="blue"
-                                              variant="solid"
-                                              aria-label="Download PDF"
-                                              onClick={() => generateTrackingHistoryPDF(selectedTracking)}
-                                              bg="blue.500"
-                                              color="white"
-                                              _hover={{ 
-                                                bg: "blue.600",
-                                                transform: "translateY(-1px)"
-                                              }}
-                                              _active={{ 
-                                                bg: "blue.700",
-                                                transform: "translateY(0px)"
-                                              }}
-                                              boxShadow="sm"
-                                            />
-                                          </Tooltip>
-                                        </HStack>
+                                        <Badge colorScheme="blue" fontSize={{ base: "2xs", md: "sm" }}>
+                                          {trackingDataMap[selectedTracking].result.length} events
+                                        </Badge>
                                       )}
                                     </Flex>
 
@@ -4893,18 +4674,7 @@ const BulkTrackingResults = ({
            Refresh All
          </Button>
         
-        <Button
-          size="sm"
-          onClick={() => {
-            // Scroll to tracking section
-            const trackingSection = document.getElementById("tracking-section");
-            if (trackingSection) {
-              trackingSection.scrollIntoView({ behavior: "smooth" });
-            }
-          }}
-        >
-          Manage Trackings
-        </Button>
+       
         <HStack spacing={3}>
             
             <Button
